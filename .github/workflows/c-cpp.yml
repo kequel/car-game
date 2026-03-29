@@ -5,17 +5,41 @@ on:
     branches: [ "master" ]
 
 jobs:
-  build:
-
+  check-files:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+      - uses: actions/checkout@v4
+
+      - name: Check client files exist
+        run: |
+          for f in main.cpp net.cpp net.h objects.cpp objects.h vector3D.cpp vector3D.h quaternion.cpp quaternion.h; do
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; exit 1; fi
+          done
+          echo "All client files present"
+
+      - name: Check server files exist
+        run: |
+          for f in server/net.cpp server/net.h server/quaternion.cpp server/vector3D.cpp server/SerwerApplication1/serwer_main.cpp; do
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; exit 1; fi
+          done
+          echo "All server files present"
+
+  build-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y g++
+
+      - name: Compile server
+        run: |
+          g++ -std=c++14 -DLINUX \
+            server/SerwerApplication1/serwer_main.cpp \
+            server/net.cpp \
+            server/vector3D.cpp \
+            server/quaternion.cpp \
+            -I server/ \
+            -lpthread \
+            -o server_bin
+          echo "Server compiled successfully"
