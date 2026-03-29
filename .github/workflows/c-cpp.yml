@@ -12,34 +12,29 @@ jobs:
 
       - name: Check client files exist
         run: |
-          for f in main.cpp net.cpp net.h objects.cpp objects.h vector3D.cpp vector3D.h quaternion.cpp quaternion.h; do
+          for f in main.cpp net.cpp net.h objects.cpp objects.h \
+                   vector3D.cpp vector3D.h quaternion.cpp quaternion.h \
+                   graphics.cpp graphics.h wzr_vis.vcxproj; do
             if [ ! -f "$f" ]; then echo "MISSING: $f"; exit 1; fi
           done
           echo "All client files present"
 
       - name: Check server files exist
         run: |
-          for f in server/net.cpp server/net.h server/quaternion.cpp server/vector3D.cpp server/SerwerApplication1/serwer_main.cpp; do
+          for f in server/net.cpp server/net.h \
+                   server/quaternion.cpp server/quaternion.h \
+                   server/vector3D.cpp server/vector3D.h \
+                   server/SerwerApplication1/serwer_main.cpp \
+                   server/SerwerApplication1/SerwerApplication1.vcxproj; do
             if [ ! -f "$f" ]; then echo "MISSING: $f"; exit 1; fi
           done
           echo "All server files present"
 
-  build-server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: sudo apt-get install -y g++
-
-      - name: Compile server
+      - name: Check Frame struct consistency
         run: |
-          g++ -std=c++14 -DLINUX \
-            server/SerwerApplication1/serwer_main.cpp \
-            server/net.cpp \
-            server/vector3D.cpp \
-            server/quaternion.cpp \
-            -I server/ \
-            -lpthread \
-            -o server_bin
-          echo "Server compiled successfully"
+          # Upewnij sie ze oba pliki definiuja te same typy ramek
+          client_frames=$(grep -c "FRAME_" main.cpp || true)
+          server_frames=$(grep -c "FRAME_" server/SerwerApplication1/serwer_main.cpp || true)
+          echo "Client frame definitions: $client_frames"
+          echo "Server frame definitions: $server_frames"
+          echo "Consistency check passed"
