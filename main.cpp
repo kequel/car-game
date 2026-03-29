@@ -21,22 +21,15 @@
 #include "net.h"
 using namespace std;
 
-// -------------------------------------------------------
-// Typy ramek (identyczne z serwerem)
-// -------------------------------------------------------
 #define FRAME_STATE     1
 #define FRAME_COLLISION 2
 #define FRAME_REGISTER  3
 #define FRAME_INACTIVE  4
 
-// -------------------------------------------------------
-// KONFIGURACJA - zmien na faktyczny adres IP serwera
-// Mozna tez wczytac z pliku konfiguracyjnego lub z args
-// -------------------------------------------------------
-//#define SERVER_IP  "172.20.10.13"
-#define SERVER_IP  "127.0.0.1"
-#define CLIENT_SEND_PORT htons(1001)      // klient nadaje -> serwer odbiera na 1001
-#define CLIENT_RECV_PORT htons(1002)      // klient odbiera <- serwer wysyla z 1002
+// zmien na IP serwera (ipconfig), lub 127.0.0.1 jesli serwer na tym samym komputerze
+#define SERVER_IP        "127.0.0.1"
+#define SERVER_PORT      htons(1001)   // serwer odbiera na 1001
+#define CLIENT_RECV_PORT htons(1002)   // klient odbiera na 1002
 
 FILE* f = fopen("vct_log.txt", "w");
 
@@ -44,13 +37,12 @@ MovableObject* my_car;
 Environment env;
 map<int, MovableObject*> other_cars;
 
-float avg_cycle_time;
-long time_of_cycle, number_of_cyc;
+float avg_cycle_time = 1.0f / 60.0f; // default dt (assume 60 FPS) to allow simulation immediately
+long time_of_cycle = 0, number_of_cyc = 0;
 long time_start = clock();
 
-// --- zamiast multicast_net uzywamy unicast_net ---
 unicast_net* uni_recv = NULL;   // odbior od serwera (port 1002)
-unicast_net* uni_send = NULL;   // wysylanie do serwera (port 1001)
+unicast_net* uni_send = NULL;   // wysylanie do serwera (losowy port lokalny)
 
 HANDLE threadReciv;
 HWND main_window;
@@ -64,9 +56,6 @@ int  mouse_cursor_x = 0, mouse_cursor_y = 0;
 extern ViewParams viewpar;
 long duration_of_day = 800;
 
-// -------------------------------------------------------
-// Ramka sieciowa (identyczna jak w serwerze)
-// -------------------------------------------------------
 struct Frame
 {
     int  iID;
@@ -76,9 +65,6 @@ struct Frame
     int  iID_receiver;
 };
 
-// -------------------------------------------------------
-// Watek odbioru - odbiera TYLKO od serwera
-// -------------------------------------------------------
 DWORD WINAPI ReceiveThreadFun(void* ptr)
 {
     unicast_net* pnet = (unicast_net*)ptr;
@@ -89,12 +75,12 @@ DWORD WINAPI ReceiveThreadFun(void* ptr)
     {
         int frame_size = pnet->reciv((char*)&frame, &senderIP, sizeof(Frame));
         if (frame_size <= 0) continue;
+        printf("odebrano ramke: iID=%d type=%d my_iID=%d\n", frame.iID, frame.type, my_car->iID);
 
         EnterCriticalSection(&m_cs);
 
         if (frame.type == FRAME_INACTIVE)
         {
-            // Serwer informuje, ze klient o tym iID sie rozlaczyl
             if (other_cars.count(frame.iID))
             {
                 delete other_cars[frame.iID];
@@ -106,15 +92,12 @@ DWORD WINAPI ReceiveThreadFun(void* ptr)
 
         if (frame.type == FRAME_COLLISION && frame.iID_receiver == my_car->iID)
         {
-            // Serwer potwierdzil kolizje - ustawiamy flage
             my_car->is_collided = true;
-            // collision_point to pozycja DRUGIEGO pojazdu (przeslana w state)
             my_car->collision_point = frame.state.vPos;
             LeaveCriticalSection(&m_cs);
             continue;
         }
 
-        // FRAME_STATE od innych klientow (przeslane przez serwer)
         if (frame.iID != my_car->iID)
         {
             if (other_cars.find(frame.iID) == other_cars.end() || other_cars[frame.iID] == NULL)
@@ -125,7 +108,6 @@ DWORD WINAPI ReceiveThreadFun(void* ptr)
             }
             other_cars[frame.iID]->ChangeState(frame.state);
 
-            // Lokalne zerowanie kolizji jesli oddalil sie
             if (my_car->is_collided)
             {
                 float dist = (my_car->state.vPos - frame.state.vPos).length();
@@ -139,21 +121,31 @@ DWORD WINAPI ReceiveThreadFun(void* ptr)
     return 1;
 }
 
-// -------------------------------------------------------
-// Inicjalizacja
-// -------------------------------------------------------
 void InteractionInitialisation()
 {
     DWORD dwThreadId;
 
     my_car = new MovableObject();
+    my_car->iID = 100 + (int)((time(NULL) + GetCurrentProcessId()) % 900);
     time_of_cycle = clock();
 
-    // Klient odbiera na porcie 1002 (serwer wysyla z 1002)
+    // Klient odbiera na porcie 1002
     uni_recv = new unicast_net(CLIENT_RECV_PORT);
-    // Klient wysyla z dowolnego wolnego portu... ale zeby nie byc na 1001/1002
-    // tworzymy osobny socket nadawczy na porcie 1001
-    uni_send = new unicast_net(CLIENT_SEND_PORT);
+
+    // Klient wysyla z losowego portu, ale cel to SERVER_IP:1001
+    uni_send = new unicast_net(htons(0));
+    uni_send->udpServAddr.sin_port = SERVER_PORT;  // ustaw port docelowy serwera
+
+    // Wyślij ramkę rejestracyjną natychmiast, żeby serwer od razu zna o naszym kliencie
+    {
+        Frame reg;
+        reg.state = my_car->State();
+        reg.iID = my_car->iID;
+        reg.type = FRAME_REGISTER;
+        reg.sending_time = clock();
+        reg.iID_receiver = 0;
+        uni_send->send((char*)&reg, SERVER_IP, sizeof(Frame));
+    }
 
     threadReciv = CreateThread(
         NULL, 0,
@@ -166,9 +158,6 @@ void InteractionInitialisation()
     printf("Klient uruchomiony. Serwer: %s\n", SERVER_IP);
 }
 
-// -------------------------------------------------------
-// Glowny cykl
-// -------------------------------------------------------
 void VirtualWorldCycle()
 {
     number_of_cyc++;
@@ -187,11 +176,8 @@ void VirtualWorldCycle()
         SetWindowText(main_window, text);
     }
 
-    // Symulacja wlasnego pojazdu
-    // (kolizje sa wykrywane przez serwer; flaga is_collided ustawiana w watku odbioru)
     my_car->Simulation(avg_cycle_time);
 
-    // Wyslij stan do serwera
     Frame frame;
     frame.state = my_car->State();
     frame.iID = my_car->iID;
@@ -199,22 +185,15 @@ void VirtualWorldCycle()
     frame.sending_time = clock();
     frame.iID_receiver = 0;
 
-    // uni_send wysyla na SERVER_IP:1001
     uni_send->send((char*)&frame, SERVER_IP, sizeof(Frame));
 }
 
-// -------------------------------------------------------
-// Zamkniecie
-// -------------------------------------------------------
 void EndOfInteraction()
 {
     fprintf(f, "Koniec interakcji\n");
     fclose(f);
 }
 
-// -------------------------------------------------------
-// Reszta (WinMain, WndProc) - niezmieniona wzgledem oryginalu
-// -------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 HDC g_context = NULL;
 
@@ -310,7 +289,6 @@ LRESULT CALLBACK WndProc(HWND main_window, UINT message_code, WPARAM wParam, LPA
         PostQuitMessage(0);
         return 0;
     }
-    // --- sterowanie (bez zmian) ---
     case WM_LBUTTONDOWN:
         if (if_mouse_control) my_car->F = 30.0f;
         break;
